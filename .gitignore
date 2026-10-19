@@ -1,0 +1,23 @@
+# Este repositorio contiene únicamente el proyecto y su documentación técnica.
+# Los documentos comerciales y temporales del workspace quedan fuera.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/backend/
+!/docs/
+
+# Protección adicional de secretos y archivos de ejecución en cualquier carpeta.
+**/node_modules/
+**/dist/
+**/coverage/
+**/.local/
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+**/.cloudflared/
+**/cert.pem
+**/*.key
+**/*.p12
+**/*.pfx

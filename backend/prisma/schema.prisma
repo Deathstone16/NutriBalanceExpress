@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum EstadoTurno {
+  pending
+  confirmed
+  attended
+  cancelled
+}
+
+model Usuario {
+  id             String   @id @default(uuid()) @db.Uuid
+  correo         String   @unique @map("email") @db.VarChar(254)
+  nombreVisible  String   @map("display_name") @db.VarChar(100)
+  claveHash      String   @map("password_hash")
+  rol            String   @default("professional") @map("role")
+  creadoEn       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  @@map("users")
+}
+
+model Sesion {
+  identificador String   @id @map("sid") @db.VarChar
+  datos         Json     @map("sess") @db.Json
+  venceEn       DateTime @map("expire") @db.Timestamp(6)
+  @@index([venceEn], map: "sessions_expire_idx")
+  @@map("sessions")
+}
+
+model Paciente {
+  id              String    @id @default(uuid()) @db.Uuid
+  nombre          String    @map("first_name") @db.VarChar(80)
+  apellido        String    @map("last_name") @db.VarChar(80)
+  telefono        String    @map("phone") @db.VarChar(30)
+  documento       String?   @unique @map("document_number") @db.VarChar(9)
+  fechaNacimiento DateTime? @map("birth_date") @db.Date
+  correo          String?   @map("email") @db.VarChar(254)
+  antecedentes    String?   @map("background")
+  alergias        String?   @map("allergies")
+  medicacion      String?   @map("medication")
+  creadoEn        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  actualizadoEn   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  turnos          Turno[]
+  consultas       Consulta[]
+  @@index([apellido, nombre, id])
+  @@map("patients")
+}
+
+model Turno {
+  id               String      @id @default(uuid()) @db.Uuid
+  pacienteId       String?     @map("patient_id") @db.Uuid
+  nombreContacto   String      @map("contact_name") @db.VarChar(160)
+  telefonoContacto String      @map("contact_phone") @db.VarChar(30)
+  correoContacto   String?     @map("contact_email") @db.VarChar(254)
+  inicio           DateTime    @map("starts_at") @db.Timestamptz(3)
+  fin              DateTime    @map("ends_at") @db.Timestamptz(3)
+  estado           EstadoTurno @default(pending) @map("status")
+  creadoEn         DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  actualizadoEn    DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  paciente         Paciente?   @relation(fields: [pacienteId], references: [id], onDelete: Restrict)
+  consulta         Consulta?
+  @@index([inicio, id])
+  @@map("appointments")
+}
+
+model Consulta {
+  id             String   @id @default(uuid()) @db.Uuid
+  pacienteId     String   @map("patient_id") @db.Uuid
+  turnoId        String?  @unique @map("appointment_id") @db.Uuid
+  fecha          DateTime @map("date") @db.Date
+  motivo         String   @map("reason") @db.VarChar(500)
+  objetivo       String?  @map("objective") @db.VarChar(1000)
+  observaciones  String?  @map("observations")
+  pesoKg         Decimal? @map("weight_kg") @db.Decimal(5,2)
+  alturaCm       Decimal? @map("height_cm") @db.Decimal(5,2)
+  cinturaCm      Decimal? @map("waist_cm") @db.Decimal(5,2)
+  indicaciones   String   @map("instructions")
+  creadoEn       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  actualizadoEn  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  paciente       Paciente @relation(fields: [pacienteId], references: [id], onDelete: Restrict)
+  turno          Turno?   @relation(fields: [turnoId], references: [id], onDelete: Restrict)
+  @@index([pacienteId, fecha, creadoEn, id])
+  @@map("consultations")
+}

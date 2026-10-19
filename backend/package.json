@@ -1,0 +1,64 @@
+{
+  "name": "nutriturnos-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "API académica NutriTurnos: monolito modular Express y TypeScript",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "prisma generate && tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.verificacion.json",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
+    "setup:local": "tsx scripts/preparar-local.ts",
+    "setup:env": "tsx scripts/preparar-local.ts --solo-entorno",
+    "db:local": "tsx scripts/postgres-local.ts",
+    "test": "tsx scripts/ejecutar-pruebas.ts",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "tsx scripts/ejecutar-pruebas.ts --integration"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.0.0",
+    "@prisma/client": "^7.0.0",
+    "argon2": "^0.44.0",
+    "connect-pg-simple": "^10.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.0",
+    "express-session": "^1.18.2",
+    "helmet": "^8.1.0",
+    "luxon": "^3.7.2",
+    "pg": "^8.16.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/connect-pg-simple": "^7.0.3",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
+    "@types/express-session": "^1.18.2",
+    "@types/luxon": "^3.7.1",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.6",
+    "@types/supertest": "^6.0.3",
+    "embedded-postgres": "17.10.0-beta.17",
+    "prisma": "^7.0.0",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.10.1": true,
+    "prisma@7.10.1": true,
+    "esbuild@0.28.2": true,
+    "argon2@0.44.0": true,
+    "@embedded-postgres/windows-x64@17.10.0-beta.17": true
+  }
+}
