@@ -15,3 +15,4 @@ async function cerrarServidor() {
 }
 process.on('SIGINT', cerrarServidor);
 process.on('SIGTERM', cerrarServidor);
+process.on('message', mensaje => { if (mensaje === 'detener') void cerrarServidor(); });

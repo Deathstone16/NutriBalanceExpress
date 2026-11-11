@@ -1,0 +1,9 @@
+# Ejemplo para un túnel local existente. Copiar fuera de Git y completar su ID
+# y credentials-file. Para túneles administrados en el dashboard, configurar
+# allí api.neadev.com -> http://127.0.0.1:3000 y conservar el token privado.
+tunnel: COMPLETAR-ID-DEL-TUNEL
+credentials-file: COMPLETAR-RUTA-PRIVADA.json
+ingress:
+  - hostname: api.neadev.com
+    service: http://127.0.0.1:3000
+  - service: http_status:404

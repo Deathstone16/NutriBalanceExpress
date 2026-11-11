@@ -5,6 +5,8 @@ import { DateTime } from 'luxon';
 import { crearAplicacion } from '../../src/app.js';
 import { baseDatos, cerrarConexiones } from '../../src/database/cliente.js';
 import { crearConfiguracionHttp } from '../../src/config/http.js';
+import { esquemaEntorno } from '../../src/config/entorno.js';
+import { crearEntornoTunel, ORIGEN_FRONTEND } from '../../scripts/perfil-tunel.js';
 
 const correoPrueba = 'integracion@nutri.test';
 const clavePrueba = 'clave-integracion-segura';
@@ -121,6 +123,37 @@ describe('contrato HTTP de NutriTurnos', () => {
     const respuesta = await request(crearAplicacion(configuracion))
       .get('/api/v1/auth/csrf').set('X-Forwarded-Proto', 'https').expect(200);
     expect(respuesta.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('mantiene el contrato del gateway actual con cookie Secure/Lax y sesión persistida entre instancias', async () => {
+    const configuracion = crearConfiguracionHttp(esquemaEntorno.parse(crearEntornoTunel(process.env)));
+    const app = crearAplicacion(configuracion);
+    const csrf = await request(app).get('/api/v1/auth/csrf').set('X-Forwarded-Proto', 'https').expect(200);
+    const cookieAnonima = (csrf.headers['set-cookie'] as unknown as string[])[0]!;
+    expect(cookieAnonima).toContain('Secure');
+    expect(cookieAnonima).toContain('HttpOnly');
+    expect(cookieAnonima).toContain('SameSite=Lax');
+    const ingreso = await request(app).post('/api/v1/auth/login')
+      .set('X-Forwarded-Proto', 'https').set('Origin', ORIGEN_FRONTEND)
+      .set('Cookie', cookieAnonima.split(';')[0]!).set('X-CSRF-Token', csrf.body.csrfToken)
+      .send({ email: correoPrueba, password: clavePrueba }).expect(200);
+    expect(ingreso.headers['access-control-allow-origin']).toBe(ORIGEN_FRONTEND);
+    expect(ingreso.body.csrfToken).not.toBe(csrf.body.csrfToken);
+    const cookie = (ingreso.headers['set-cookie'] as unknown as string[])[0]!.split(';')[0]!;
+    expect(cookie).not.toBe(cookieAnonima.split(';')[0]);
+    // El gateway del frontend conserva el valor nutri.sid, solo cambia Path/SameSite.
+    const segundaInstancia = crearAplicacion(configuracion);
+    const sesion = await request(segundaInstancia).get('/api/v1/auth/me')
+      .set('X-Forwarded-Proto', 'https').set('Cookie', cookie).expect(200);
+    expect(sesion.body.user.email).toBe(correoPrueba);
+    const paciente = await request(segundaInstancia).post('/api/v1/patients')
+      .set('X-Forwarded-Proto', 'https').set('Cookie', cookie).set('X-CSRF-Token', ingreso.body.csrfToken)
+      .send({ firstName: 'Paciente', lastName: 'Gateway', phone: '0000000000' }).expect(201);
+    await request(segundaInstancia).get(`/api/v1/patients/${paciente.body.id}`)
+      .set('X-Forwarded-Proto', 'https').set('Cookie', cookie).expect(200);
+    await request(segundaInstancia).post('/api/v1/auth/logout')
+      .set('X-Forwarded-Proto', 'https').set('Cookie', cookie).set('X-CSRF-Token', ingreso.body.csrfToken).expect(204);
+    await request(app).get('/api/v1/auth/me').set('X-Forwarded-Proto', 'https').set('Cookie', cookie).expect(401);
   });
 
   it('permite preflight con credenciales solo para el origen configurado del frontend', async () => {

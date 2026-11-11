@@ -16,6 +16,7 @@
 **/.env.*
 !**/.env.example
 **/*.log
+**/*.crdownload
 **/.cloudflared/
 **/cert.pem
 **/*.key

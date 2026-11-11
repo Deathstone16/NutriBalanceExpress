@@ -41,3 +41,4 @@ async function detener() {
 }
 process.on('SIGINT', detener);
 process.on('SIGTERM', detener);
+process.on('message', mensaje => { if (mensaje === 'detener') void detener(); });
