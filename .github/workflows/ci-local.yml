@@ -1,0 +1,72 @@
+name: Backend - CI y despliegue local
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: nutri
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: nutri_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nutri -d nutri_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://nutri:ci-only-password@127.0.0.1:5432/nutri_test
+      TEST_DATABASE_URL: postgresql://nutri:ci-only-password@127.0.0.1:5432/nutri_test
+      SESSION_SECRET: ci-only-session-secret-with-more-than-forty-three-characters
+      APP_ORIGIN: http://localhost:5173
+      TRUST_PROXY: none
+      SESSION_COOKIE_SECURE: 'false'
+      SESSION_COOKIE_SAME_SITE: lax
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run db:generate
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - run: node --check scripts/deployment-agent.mjs
+
+  request-deployment:
+    needs: validate
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - name: Solicitar despliegue en la PC
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node -e "require('fs').writeFileSync('deployment.json', JSON.stringify({ref:process.env.GITHUB_SHA, environment:'local-cloudflare', auto_merge:false, required_contexts:[], production_environment:true, description:'CI aprobada. Esperando al agente local.'}))"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input deployment.json --jq .id
