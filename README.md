@@ -1,5 +1,7 @@
 # NutriBalance Express
 
+**Despliegue automático:** [pipeline de ambos repositorios y agente de la PC](docs/despliegue-automatico.md). GitHub valida cada cambio a `main`; el agente local publica únicamente commits aprobados y conserva la base de datos. La web se abre en `https://api.neadev.com`; la dirección directa de la API se consulta en el estado local y en la colección de Postman.
+
 Backend académico de NutriTurnos: API REST con Express, TypeScript y PostgreSQL, organizada como monolito modular.
 
 ## Funcionalidades
