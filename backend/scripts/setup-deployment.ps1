@@ -41,7 +41,7 @@ $configuration = [ordered]@{
     postgresData = (Join-Path $backendDirectory '.local\postgres')
     postmanCollection = (Join-Path $taskWorkspace 'docs\api\NutriBalance.postman_collection.json')
     apiTunnelState = (Join-Path $frontendDirectory '.sites-runtime\expo\api-url.json')
-    repositories = @{ frontend = 'Maaupelozo/nutribalance-tp-web'; backend = 'Deathstone16/NutriBalanceExpress' }
+    repositories = @{ frontend = 'Deathstone16/nutribalance-tp-web'; backend = 'Deathstone16/NutriBalanceExpress' }
     pollSeconds = 30
     initial = @{ frontend = @{ dir = $frontendDirectory; sha = $frontendRevision }; backend = @{ dir = $backendDirectory; sha = $backendRevision } }
 }

@@ -75,8 +75,17 @@ async function startLive(){
   const child=spawn(config.node,['--env-file-if-exists=.env.local','scripts/serve-expo.mjs','--sin-compilar'],{cwd:dir,env:frontendEnvironment(),detached:true,windowsHide:true,stdio:['ignore',out,err]});
   child.unref();fs.closeSync(out);fs.closeSync(err);
   await waitHealthy('http://127.0.0.1:3000/api/health');await waitHealthy('http://127.0.0.1:3001/health');
-  const response=await fetch(config.publicOrigin,{signal:AbortSignal.timeout(15000)});
-  if(!response.ok||!response.headers.get('content-type')?.includes('text/html'))throw new Error('La web pública no respondió correctamente.');
+  const localPage=await fetch('http://127.0.0.1:3000/',{signal:AbortSignal.timeout(5000)});
+  if(!localPage.ok||!localPage.headers.get('content-type')?.includes('text/html'))throw new Error('El frontend local no entregó HTML.');
+  const response=await fetch(config.publicOrigin,{redirect:'manual',signal:AbortSignal.timeout(15000)});
+  const html=response.headers.get('content-type')?.includes('text/html');
+  if(response.ok&&html){state.publicEndpoint={status:response.status,access:'public'};return}
+  if(response.status===403&&response.headers.get('server')==='cloudflare'&&html&&/<title>[^<]*Cloudflare Access<\/title>/i.test(await response.text())){
+    state.publicEndpoint={status:403,access:'cloudflare-access',externalApplicationVerified:false};
+    log('Servicios locales comprobados. Cloudflare Access protege el dominio; la comprobación desde Vercel requiere su Service Token.');
+    return;
+  }
+  throw new Error('La web pública no respondió correctamente.');
 }
 async function stopLive(){
   const runtime=path.join(state.live.frontend.dir,'.sites-runtime/expo');

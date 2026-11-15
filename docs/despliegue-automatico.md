@@ -14,12 +14,14 @@ Push a main del frontend o backend
 
 Repositorios:
 
-- Frontend: `Maaupelozo/nutribalance-tp-web`.
+- Frontend: [Deathstone16/nutribalance-tp-web](https://github.com/Deathstone16/nutribalance-tp-web), fork propio del proyecto de Mauricio.
 - Backend: `Deathstone16/NutriBalanceExpress`.
 
 El agente consulta cada 30 segundos. Un commit desplegable debe seguir siendo la cabeza de `main`, tener una ejecución `push` o `workflow_dispatch` del mismo repositorio y haber terminado correctamente. Si `main` avanza durante la preparación, se espera a la nueva versión. Los PR y sus forks no provocan ejecución en la PC.
 
-Las dos pipelines usan ejecutores de GitHub. La PC no se registra como runner: el agente obtiene los resultados con GitHub CLI y no expone un endpoint para recibir comandos. La colaboración con permiso de escritura permite trabajar con ambos repositorios; no hace falta administración para registrar runners.
+Las dos pipelines usan ejecutores de GitHub. La PC no se registra como runner: el agente obtiene los resultados con GitHub CLI y no expone un endpoint para recibir comandos. Ambos repositorios operativos pertenecen a `Deathstone16`. El frontend conserva el original de Mauricio como remoto `upstream` y publica los cambios en el fork mediante `origin`.
+
+Vercel debe importar el fork del frontend y seguir su rama `main`. Cuando se conecte el proyecto en Vercel, sus despliegues y el despliegue local por Cloudflare podrán coexistir. Las variables y los pasos están en [la guía del frontend](https://github.com/Deathstone16/nutribalance-tp-web/blob/main/docs/despliegue-vercel.md).
 
 ## Servicios publicados
 
@@ -33,6 +35,8 @@ Las dos pipelines usan ejecutores de GitHub. La PC no se registra como runner: e
 El segundo túnel usa una URL temporal `trycloudflare.com`. Mientras el proceso siga activo, los despliegues no cambian esa dirección. Puede cambiar al reiniciar el túnel o la PC; el agente actualiza `frontend/.sites-runtime/expo/api-url.json`, `deployment/state.json` y únicamente la variable `baseUrl` de la colección local de Postman. Para una dirección fija adicional hace falta configurar otro hostname en la cuenta de Cloudflare.
 
 La API directa conserva cookie de sesión, CSRF, autenticación y validación. `/health` verifica la conexión con PostgreSQL. Las lecturas privadas requieren login. En Postman: obtener CSRF, iniciar sesión y usar el nuevo token para escrituras; el cliente conserva la cookie.
+
+Cloudflare Access está activo en `api.neadev.com`: sin autorización devuelve 403. El despliegue comprueba la portada HTML, frontend y API dentro de la PC. Si el dominio devuelve la página identificable de Cloudflare Access, registra `publicEndpoint.access=cloudflare-access` y `externalApplicationVerified=false`; no desactiva la protección ni afirma haber validado la aplicación a través de ella. La comprobación completa desde Vercel queda pendiente de cargar allí `CF_ACCESS_CLIENT_ID` y `CF_ACCESS_CLIENT_SECRET` del Service Token. No hace falta guardar ese secreto en esta PC.
 
 ## Instalación en esta PC
 
@@ -99,6 +103,6 @@ Este comando deja el agente en primer plano y permite reintentar los commits apr
 
 ## Alcance de las comprobaciones
 
-CI backend usa PostgreSQL 17 aislado, comprueba tipos, genera Prisma, compila y ejecuta las pruebas. CI frontend usa el lockfile, sus pruebas, Next.js y TypeScript. El despliegue local valida que ambos servicios respondan y que la dirección pública entregue HTML. La comprobación funcional completa se puede ejecutar adicionalmente con `pnpm check:public` y el recorrido de exposición.
+CI backend usa PostgreSQL 17 aislado, comprueba tipos, genera Prisma, compila y ejecuta las pruebas. CI frontend usa el lockfile, sus pruebas, Next.js y TypeScript. El despliegue local valida servicios y portada local, y distingue entre portada pública y bloqueo de Cloudflare Access. La comprobación funcional completa se puede ejecutar desde Vercel con `pnpm check:public` después de configurar el Service Token.
 
 Referencias: [GitHub Actions](https://docs.github.com/en/actions), [GitHub Deployments API](https://docs.github.com/en/rest/deployments), [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
