@@ -401,6 +401,44 @@ describe('contrato HTTP de NutriTurnos', () => {
     expect(await baseDatos.consulta.count({ where: { turnoId: turno.id } })).toBe(1);
   });
 
+  it('permite registrar un turno confirmado de hoy antes de su hora de inicio', async () => {
+    const agente = request.agent(crearAplicacion());
+    const { csrfToken } = await credencialesPrivadas(agente);
+    const paciente = await crearPaciente(agente, csrfToken).expect(201);
+    const inicio = DateTime.now().setZone('America/Argentina/Buenos_Aires').endOf('day');
+    const turno = await baseDatos.turno.create({ data: {
+      pacienteId: paciente.body.id, nombreContacto: 'Ana Ejemplo', telefonoContacto: '+5493624000000',
+      inicio: inicio.toJSDate(), fin: inicio.plus({ minutes: 30 }).toJSDate(), estado: 'confirmed',
+    } });
+    const respuesta = await agente.post(`/api/v1/patients/${paciente.body.id}/consultations`).set('X-CSRF-Token', csrfToken)
+      .send({ date: inicio.toISODate(), reason: 'Atención adelantada', instructions: 'Continuar plan', appointmentId: turno.id }).expect(201);
+    expect(respuesta.body.appointmentId).toBe(turno.id);
+    expect((await baseDatos.turno.findUniqueOrThrow({ where: { id: turno.id } })).estado).toBe('attended');
+    const duplicada = await agente.post(`/api/v1/patients/${paciente.body.id}/consultations`).set('X-CSRF-Token', csrfToken)
+      .send({ date: inicio.toISODate(), reason: 'Duplicada', instructions: 'Continuar plan', appointmentId: turno.id }).expect(409);
+    expect(duplicada.body.error.code).toBe('APPOINTMENT_ALREADY_LINKED');
+    expect(await baseDatos.consulta.count({ where: { turnoId: turno.id } })).toBe(1);
+  });
+
+  it('rechaza adelantar un turno de otro día y conserva su estado', async () => {
+    const agente = request.agent(crearAplicacion());
+    const { csrfToken } = await credencialesPrivadas(agente);
+    const paciente = await crearPaciente(agente, csrfToken).expect(201);
+    const hoy = DateTime.now().setZone('America/Argentina/Buenos_Aires');
+    const inicio = hoy.plus({ days: 1 }).set({ hour: 9, minute: 0 });
+    const turno = await baseDatos.turno.create({ data: {
+      pacienteId: paciente.body.id, nombreContacto: 'Ana Ejemplo', telefonoContacto: '+5493624000000',
+      inicio: inicio.toJSDate(), fin: inicio.plus({ minutes: 30 }).toJSDate(), estado: 'confirmed',
+    } });
+    for (const fecha of [hoy.toISODate(), inicio.toISODate()]) {
+      const respuesta = await agente.post(`/api/v1/patients/${paciente.body.id}/consultations`).set('X-CSRF-Token', csrfToken)
+        .send({ date: fecha, reason: 'Control', instructions: 'Continuar plan', appointmentId: turno.id }).expect(400);
+      expect(respuesta.body.error.code).toBe('VALIDATION_ERROR');
+    }
+    expect((await baseDatos.turno.findUniqueOrThrow({ where: { id: turno.id } })).estado).toBe('confirmed');
+    expect(await baseDatos.consulta.count({ where: { turnoId: turno.id } })).toBe(0);
+  });
+
   it('revierte el cambio de estado del turno si falla el insert de la consulta', async () => {
     const agente = request.agent(crearAplicacion());
     const { csrfToken } = await credencialesPrivadas(agente);

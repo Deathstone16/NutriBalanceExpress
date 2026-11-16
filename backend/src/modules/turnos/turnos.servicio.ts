@@ -88,8 +88,8 @@ export async function prepararAtencion(transaccion: Prisma.TransactionClient, tu
   if (turno.pacienteId !== pacienteId) throw new ErrorAplicacion(409, 'APPOINTMENT_PATIENT_MISMATCH', 'El turno no corresponde al paciente.');
   if (await transaccion.consulta.findUnique({ where: { turnoId }, select: { id: true } })) throw new ErrorAplicacion(409, 'APPOINTMENT_ALREADY_LINKED', 'El turno ya tiene una consulta registrada.');
   if (turno.estado !== 'confirmed') throw new ErrorAplicacion(409, 'INVALID_STATUS_TRANSITION', 'Solo se puede atender un turno confirmado.');
-  if (fechaLocal(turno.inicio) !== fecha || turno.inicio.getTime() > Date.now()) {
-    throw new ErrorAplicacion(400, 'VALIDATION_ERROR', 'La consulta debe corresponder al día del turno y su horario debe haber comenzado.', [{ field: 'appointmentId', message: 'Fecha u horario de atención inválidos.' }]);
+  if (fechaLocal(turno.inicio) !== fecha) {
+    throw new ErrorAplicacion(400, 'VALIDATION_ERROR', 'La consulta debe corresponder al día del turno.', [{ field: 'appointmentId', message: 'La fecha de la consulta debe coincidir con la del turno.' }]);
   }
   await transaccion.turno.update({ where: { id: turnoId }, data: { estado: 'attended' } });
 }
