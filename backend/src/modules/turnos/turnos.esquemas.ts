@@ -5,9 +5,12 @@ import { DateTime } from 'luxon';
 export const esquemaDisponibilidad = z.object({ date: esquemaFecha }).strict();
 export const esquemaSolicitudTurno = z.object({
   contactName: texto(160), contactPhone: texto(30).min(6),
-  contactEmail: correo.nullable().optional(),
+  contactEmail: correo,
+  contactDocumentNumber: z.string().trim().regex(/^\d{7,9}$/, 'Ingresá un DNI de 7 a 9 números, sin puntos.'),
   startsAt: z.iso.datetime({ offset: true }).refine(valor => DateTime.fromISO(valor).isValid),
 }).strict();
+// Token de 32 bytes en base64url (43 caracteres), enviado solo por correo.
+export const esquemaConfirmarCorreo = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'El enlace no es válido.') }).strict();
 export const esquemaAgenda = esquemaPaginacion.extend({
   from: esquemaFecha, to: esquemaFecha,
   status: z.enum(['pending', 'confirmed', 'attended', 'cancelled']).optional(),

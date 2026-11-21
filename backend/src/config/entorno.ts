@@ -13,6 +13,10 @@ export const esquemaEntorno = z.object({
   SESSION_SECRET: z.string().min(43),
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(24).default(12),
   CLINIC_TIME_ZONE: z.literal('America/Argentina/Buenos_Aires').default('America/Argentina/Buenos_Aires'),
+  // Correo saliente. Sin MAIL_SMTP_URL, en desarrollo los correos se guardan en .local/correos.
+  MAIL_SMTP_URL: z.preprocess(valor => valor === '' ? undefined : valor,
+    z.string().regex(/^smtps?:\/\//, 'Usá smtp://usuario:clave@servidor:587 o smtps://usuario:clave@servidor:465.').optional()),
+  MAIL_FROM: z.string().trim().min(3).max(200).default('NutriBalance <no-reply@nutribalance.test>'),
 }).superRefine((datos, contexto) => {
   const cookieSegura = datos.SESSION_COOKIE_SECURE ?? datos.NODE_ENV === 'production';
   if (datos.SESSION_COOKIE_SAME_SITE === 'none' && !cookieSegura) {

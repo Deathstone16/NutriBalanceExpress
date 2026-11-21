@@ -4,10 +4,15 @@ export function presentarTurno(turno: Turno) {
   return {
     id: turno.id, patientId: turno.pacienteId, contactName: turno.nombreContacto,
     contactPhone: turno.telefonoContacto, contactEmail: turno.correoContacto,
+    contactDocumentNumber: turno.documentoContacto, contactEmailConfirmed: turno.correoConfirmadoEn !== null,
     startsAt: turno.inicio.toISOString(), endsAt: turno.fin.toISOString(), status: turno.estado,
     createdAt: turno.creadoEn.toISOString(), updatedAt: turno.actualizadoEn.toISOString(),
   };
 }
 export function presentarRecibo(turno: Turno) {
-  return { id: turno.id, startsAt: turno.inicio.toISOString(), endsAt: turno.fin.toISOString(), status: turno.estado };
+  return {
+    id: turno.id, startsAt: turno.inicio.toISOString(), endsAt: turno.fin.toISOString(), status: turno.estado,
+    emailConfirmationRequired: turno.correoConfirmadoEn === null,
+    confirmationExpiresAt: turno.confirmacionVenceEn?.toISOString() ?? null,
+  };
 }

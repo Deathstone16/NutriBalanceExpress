@@ -15,6 +15,7 @@
     "serve:portable": "tsx scripts/arrancar.ts --portable",
     "serve:portable:tunnel": "tsx scripts/arrancar.ts --portable --tunel",
     "check:public": "tsx scripts/comprobar-publicacion.ts",
+    "mail:test": "tsx scripts/probar-correo.ts",
     "typecheck": "tsc -p tsconfig.verificacion.json",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",

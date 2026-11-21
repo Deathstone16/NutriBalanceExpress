@@ -1,12 +1,21 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { Prisma } from '../../generated/prisma/client.js';
 import { baseDatos } from '../../database/cliente.js';
 import { ErrorAplicacion, recursoNoEncontrado } from '../../shared/errors/error-aplicacion.js';
 import { obtenerAhora, ZONA_CONSULTORIO, fechaLocal } from '../../shared/fechas.js';
 import { crearMetadatos } from '../../shared/validacion.js';
+import { entorno } from '../../config/entorno.js';
+import { crearTransporte, remitente } from '../../shared/correo/transporte.js';
+import { correoConfirmacionTurno } from '../../shared/correo/plantillas.js';
 import { bloquearTurno, repositorioTurnos } from './turnos.repositorio.js';
 import { presentarRecibo, presentarTurno } from './turnos.presentador.js';
 import type { CambioTurno, FiltroAgenda, SolicitudTurno } from './turnos.esquemas.js';
+
+/** Tiempo para confirmar el correo; pasado ese plazo la solicitud se cancela y el horario se libera. */
+export const VIGENCIA_CONFIRMACION_HORAS = 2;
+const transporteCorreo = crearTransporte();
+const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
 
 export function generarHorarios(fecha: string, ahora = obtenerAhora()) {
   const dia = DateTime.fromISO(fecha, { zone: ZONA_CONSULTORIO }).startOf('day');
@@ -20,6 +29,7 @@ export function generarHorarios(fecha: string, ahora = obtenerAhora()) {
 }
 
 export async function consultarDisponibilidad(fecha: string) {
+  await repositorioTurnos.expirarSinConfirmar();
   const horarios = generarHorarios(fecha);
   const dia = DateTime.fromISO(fecha, { zone: ZONA_CONSULTORIO });
   const ocupados = await repositorioTurnos.buscarOcupados(dia.toJSDate(), dia.plus({ days: 1 }).toJSDate());
@@ -31,18 +41,61 @@ export async function solicitarTurno(datos: SolicitudTurno) {
   const inicio = DateTime.fromISO(datos.startsAt).setZone(ZONA_CONSULTORIO);
   const horarioValido = generarHorarios(inicio.toISODate()!).some(horario => Date.parse(horario.startsAt) === inicio.toMillis());
   if (!horarioValido) throw new ErrorAplicacion(400, 'VALIDATION_ERROR', 'Elegí un horario futuro ofrecido por la agenda.', [{ field: 'startsAt', message: 'Horario inválido.' }]);
+  await repositorioTurnos.expirarSinConfirmar();
+  // El recibo público no revela si la persona fue reconocida; el vínculo solo se ve en el panel.
+  const pacienteId = await repositorioTurnos.reconocerPaciente(datos.contactDocumentNumber, datos.contactEmail);
+  const token = randomBytes(32).toString('base64url');
+  const venceEn = obtenerAhora().plus({ hours: VIGENCIA_CONFIRMACION_HORAS });
+  let turno;
   try {
-    const turno = await repositorioTurnos.crear(datos, inicio.toJSDate(), inicio.plus({ minutes: 30 }).toJSDate());
-    return presentarRecibo(turno);
+    turno = await repositorioTurnos.crear(datos, pacienteId, inicio.toJSDate(), inicio.plus({ minutes: 30 }).toJSDate(), hashToken(token), venceEn.toJSDate());
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       throw new ErrorAplicacion(409, 'SLOT_UNAVAILABLE', 'El horario ya no está disponible.');
     }
     throw error;
   }
+  try {
+    await transporteCorreo.enviar(correoConfirmacionTurno(datos.contactEmail, remitente(), {
+      nombre: datos.contactName,
+      fecha: inicio.setLocale('es-AR').toFormat("cccc d 'de' LLLL 'de' yyyy"),
+      hora: inicio.toFormat('HH:mm'),
+      enlace: `${entorno.APP_ORIGIN}/confirmar-turno?token=${token}`,
+      venceHora: venceEn.toFormat('HH:mm'),
+      venceHoras: VIGENCIA_CONFIRMACION_HORAS,
+    }));
+  } catch (error) {
+    // Sin correo la persona no puede confirmar: se libera el horario y se informa el fallo.
+    await repositorioTurnos.cancelar(turno.id);
+    console.error(JSON.stringify({ evento: 'correo_no_enviado', turnoId: turno.id, motivo: error instanceof Error ? error.message : 'desconocido' }));
+    throw new ErrorAplicacion(502, 'EMAIL_DELIVERY_FAILED', 'No pudimos enviar el correo de confirmación. Revisá la dirección e intentá de nuevo.', [{ field: 'contactEmail', message: 'No pudimos enviar el correo a esta dirección.' }]);
+  }
+  return presentarRecibo(turno);
+}
+
+/** La persona abre el enlace del correo: su solicitud pasa a "correo confirmado". */
+export async function confirmarCorreoTurno(token: string) {
+  const encontrado = await repositorioTurnos.buscarPorToken(hashToken(token));
+  if (!encontrado) throw new ErrorAplicacion(404, 'CONFIRMATION_LINK_INVALID', 'El enlace no es válido.');
+  const resultado = await baseDatos.$transaction(async transaccion => {
+    const turno = await bloquearTurno(transaccion, encontrado.id);
+    if (!turno) return { tipo: 'invalido' as const };
+    if (turno.correoConfirmadoEn) return { tipo: 'ok' as const, turno, yaConfirmado: true };
+    const vencido = turno.estado === 'cancelled' || (turno.confirmacionVenceEn !== null && turno.confirmacionVenceEn < new Date());
+    if (vencido) {
+      if (turno.estado === 'pending') await transaccion.turno.update({ where: { id: turno.id }, data: { estado: 'cancelled' } });
+      return { tipo: 'vencido' as const };
+    }
+    return { tipo: 'ok' as const, yaConfirmado: false, turno: await transaccion.turno.update({ where: { id: turno.id }, data: { correoConfirmadoEn: new Date() } }) };
+  });
+  if (resultado.tipo === 'invalido') throw new ErrorAplicacion(404, 'CONFIRMATION_LINK_INVALID', 'El enlace no es válido.');
+  if (resultado.tipo === 'vencido') throw new ErrorAplicacion(409, 'CONFIRMATION_EXPIRED', 'El enlace venció y el horario se liberó. Pedí un nuevo turno.');
+  const { turno } = resultado;
+  return { emailConfirmed: true, alreadyConfirmed: resultado.yaConfirmado, startsAt: turno.inicio.toISOString(), endsAt: turno.fin.toISOString(), status: turno.estado };
 }
 
 export async function listarAgenda(filtros: FiltroAgenda) {
+  await repositorioTurnos.expirarSinConfirmar();
   const desde = DateTime.fromISO(filtros.from, { zone: ZONA_CONSULTORIO }).toJSDate();
   const hasta = DateTime.fromISO(filtros.to, { zone: ZONA_CONSULTORIO }).plus({ days: 1 }).toJSDate();
   const condicion: Prisma.TurnoWhereInput = { inicio: { gte: desde, lt: hasta } };
@@ -72,6 +125,9 @@ export async function cambiarTurno(id: string, cambio: CambioTurno) {
       throw new ErrorAplicacion(409, 'APPOINTMENT_PATIENT_MISMATCH', 'No se vincula paciente al cancelar una solicitud.');
     }
     let pacienteId = turno.pacienteId;
+    if (cambio.status === 'confirmed' && !turno.correoConfirmadoEn) {
+      throw new ErrorAplicacion(409, 'EMAIL_NOT_CONFIRMED', 'La persona todavía no confirmó su turno desde el correo.');
+    }
     if (cambio.status === 'confirmed') {
       if (!cambio.patientId) throw new ErrorAplicacion(409, 'PATIENT_REQUIRED', 'Seleccioná un paciente para confirmar.');
       if (!await transaccion.paciente.findUnique({ where: { id: cambio.patientId }, select: { id: true } })) throw recursoNoEncontrado('No se encontró el paciente.');

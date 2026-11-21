@@ -196,6 +196,7 @@ Sin horarios: `slots: []`. Se ofrecen bloques de 30 minutos de lunes a viernes e
   "contactName": "Ana Ejemplo",
   "contactPhone": "+5493624000000",
   "contactEmail": "ana@example.test",
+  "contactDocumentNumber": "30111222",
   "startsAt": "2026-10-19T12:00:00Z"
 }
 ```
@@ -204,8 +205,11 @@ Sin horarios: `slots: []`. Se ofrecen bloques de 30 minutos de lunes a viernes e
 |---|---|---|
 | contactName | string, 1-160 caracteres | Sí |
 | contactPhone | string, 6-30 caracteres | Sí |
-| contactEmail | string email hasta 254, o null | No |
+| contactEmail | string email hasta 254 | Sí |
+| contactDocumentNumber | string DNI, 7-9 dígitos sin puntos | Sí |
 | startsAt | string fecha/hora de un slot disponible | Sí |
+
+**Reconocimiento de pacientes:** si el DNI coincide con una ficha, el turno queda vinculado a ella (`patientId`). Si no, y `contactEmail` coincide con una única ficha sin DNI cargado, se vincula a esa. El turno sigue en `pending` y la profesional puede confirmarlo con esa u otra ficha. La respuesta pública no indica si hubo reconocimiento.
 
 **Respuesta 201:**
 
@@ -214,11 +218,37 @@ Sin horarios: `slots: []`. Se ofrecen bloques de 30 minutos de lunes a viernes e
   "id": "33333333-3333-4333-8333-333333333333",
   "startsAt": "2026-10-19T12:00:00Z",
   "endsAt": "2026-10-19T12:30:00Z",
+  "status": "pending",
+  "emailConfirmationRequired": true,
+  "confirmationExpiresAt": "2026-10-16T14:00:00Z"
+}
+```
+
+Al registrar la solicitud se envía un correo a `contactEmail` con un enlace `{APP_ORIGIN}/confirmar-turno?token=...`. La persona tiene 2 horas para confirmarlo; si no, la solicitud pasa a `cancelled` y el horario se libera. Mientras tanto la profesional no puede confirmar el turno.
+
+Horario ocupado: **409 SLOT_UNAVAILABLE**; refrescar disponibilidad. Si el correo no puede enviarse: **502 EMAIL_DELIVERY_FAILED** (con `details` sobre `contactEmail`); la solicitud no queda registrada y el horario se libera. Tras confirmar el correo, el turno sigue `pending` hasta que la profesional lo confirme.
+
+### POST `/appointment-requests/confirm-email`
+
+**Público** (requiere CSRF, como la solicitud). La persona abre el enlace del correo y el front envía el token.
+
+```json
+{ "token": "43 caracteres base64url del enlace" }
+```
+
+**Respuesta 200:**
+
+```json
+{
+  "emailConfirmed": true,
+  "alreadyConfirmed": false,
+  "startsAt": "2026-10-19T12:00:00Z",
+  "endsAt": "2026-10-19T12:30:00Z",
   "status": "pending"
 }
 ```
 
-Horario ocupado: **409 SLOT_UNAVAILABLE**; refrescar disponibilidad. El turno queda pendiente de confirmación de la profesional.
+Repetir el envío devuelve 200 con `alreadyConfirmed: true`. Token inexistente: **404 CONFIRMATION_LINK_INVALID**. Token vencido o solicitud cancelada: **409 CONFIRMATION_EXPIRED** (el horario ya se liberó). Formato inválido: **400 VALIDATION_ERROR**. Tiene límite de 20 intentos cada 15 minutos.
 
 ### Datos expuestos del turno en el panel privado
 
@@ -229,6 +259,8 @@ Horario ocupado: **409 SLOT_UNAVAILABLE**; refrescar disponibilidad. El turno qu
   "contactName": "Ana Ejemplo",
   "contactPhone": "+5493624000000",
   "contactEmail": "ana@example.test",
+  "contactDocumentNumber": "30111222",
+  "contactEmailConfirmed": true,
   "startsAt": "2026-10-19T12:00:00Z",
   "endsAt": "2026-10-19T12:30:00Z",
   "status": "pending",
@@ -237,7 +269,7 @@ Horario ocupado: **409 SLOT_UNAVAILABLE**; refrescar disponibilidad. El turno qu
 }
 ```
 
-`patientId` es null hasta vincular una ficha. `contactEmail` puede ser null. Los demás campos siempre tienen valor. Estados: `pending`, `confirmed`, `attended`, `cancelled`.
+`patientId` es null hasta vincular una ficha, salvo que la solicitud haya sido reconocida. `contactEmailConfirmed` indica si la persona confirmó el correo (las solicitudes anteriores a este paso figuran como confirmadas). `contactDocumentNumber` es null en solicitudes anteriores a que el DNI fuera obligatorio. Los demás campos siempre tienen valor. Estados: `pending`, `confirmed`, `attended`, `cancelled`.
 
 ### GET `/appointments`
 
@@ -280,7 +312,7 @@ Para cancelar o marcar atendido: enviar únicamente `status`, con `cancelled` o 
 | confirmed | attended, cancelled |
 | attended / cancelled | Sin cambios |
 
-Confirmar exige una ficha existente. No se permite cambiar el paciente ya vinculado. Repetir el mismo estado sin cambiar el vínculo es válido. Transición inválida: **409 INVALID_STATUS_TRANSITION**. Esta versión no acepta reprogramación directa.
+Confirmar exige que la persona haya confirmado su correo (si no, **409 EMAIL_NOT_CONFIRMED**) y una ficha existente. No se permite cambiar el paciente ya vinculado. Repetir el mismo estado sin cambiar el vínculo es válido. Transición inválida: **409 INVALID_STATUS_TRANSITION**. Esta versión no acepta reprogramación directa.
 
 ## 4. Consultas e historia clínica
 
@@ -397,6 +429,10 @@ Pacientes, agenda e historial comparten esta estructura. Los objetos de `data` t
 | 409 | SLOT_UNAVAILABLE | Horario ocupado. |
 | 409 | INVALID_STATUS_TRANSITION | Cambio de estado no permitido. |
 | 409 | PATIENT_REQUIRED | Falta vincular paciente para confirmar. |
+| 409 | EMAIL_NOT_CONFIRMED | La persona todavía no confirmó su correo. |
+| 409 | CONFIRMATION_EXPIRED | El enlace del correo venció y el horario se liberó. |
+| 404 | CONFIRMATION_LINK_INVALID | El enlace de confirmación no existe. |
+| 502 | EMAIL_DELIVERY_FAILED | No se pudo enviar el correo de confirmación. |
 | 409 | APPOINTMENT_PATIENT_MISMATCH | El vínculo de paciente no corresponde a la operación. |
 | 409 | APPOINTMENT_ALREADY_LINKED | El turno ya tiene una consulta registrada. |
 | 429 | RATE_LIMITED | Demasiadas solicitudes; header Retry-After indica segundos de espera. |
