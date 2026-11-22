@@ -14,5 +14,6 @@ export const manejarErrores: ErrorRequestHandler = (error: unknown, _peticion, r
     console.error(JSON.stringify({ requestId: respuesta.locals.identificadorPeticion, evento: 'error_interno', tipo: error instanceof Error ? error.name : 'Unknown' }));
     fallo = new ErrorAplicacion(500, 'INTERNAL_ERROR', 'No se pudo completar la operación.');
   }
+  if (fallo.reintentarEnSegundos) respuesta.setHeader('Retry-After', String(fallo.reintentarEnSegundos));
   respuesta.status(fallo.estadoHttp).json({ error: { code: fallo.codigo, message: fallo.message, details: fallo.detalles }, requestId: respuesta.locals.identificadorPeticion });
 };

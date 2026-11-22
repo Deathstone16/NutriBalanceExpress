@@ -6,7 +6,6 @@ export interface DatosConfirmacionTurno {
   hora: string;       // "10:00"
   enlace: string;     // URL absoluta de confirmación
   venceHora: string;  // "12:05"
-  venceHoras: number; // validez en horas
 }
 
 export const escaparHtml = (valor: string) => valor
@@ -53,7 +52,7 @@ export function correoConfirmacionTurno(para: string, de: string, datos: DatosCo
     <a href="${enlace}" style="display:block;padding:18px 24px;background:${lima};border:1px solid ${bosque};border-radius:100px;font-family:${titulos};font-size:24px;line-height:1;font-weight:700;letter-spacing:0.01em;text-transform:uppercase;text-decoration:none;color:${bosque};">Confirmar mi turno</a>
   </td></tr>
   <tr><td style="padding:14px 40px 8px;font-family:${cuerpo};font-size:14px;line-height:1.6;color:${texto};">
-    <p style="margin:0 0 12px;"><strong style="color:${bosque};">El enlace vale ${datos.venceHoras} horas</strong> (hasta las ${escaparHtml(datos.venceHora)}). Si no lo confirmás, el horario se libera para otra persona.</p>
+    <p style="margin:0 0 12px;"><strong style="color:${bosque};">El enlace vale hasta las ${escaparHtml(datos.venceHora)}</strong> (hora de Argentina). Si no lo confirmás, el horario se libera para otra persona.</p>
     <p style="margin:0;">Una vez confirmado, la solicitud queda pendiente de la aprobación del consultorio.</p>
   </td></tr>
   <tr><td style="padding:22px 40px 34px;font-family:${cuerpo};font-size:12px;line-height:1.6;color:${texto};">
@@ -72,7 +71,7 @@ export function correoConfirmacionTurno(para: string, de: string, datos: DatosCo
     'Recibimos tu solicitud de turno en NutriBalance. Para que quede registrada, confirmala con este enlace:', '',
     datos.enlace, '',
     `Turno solicitado: ${datos.fecha}, ${datos.hora} h (Argentina), consulta de 30 minutos.`,
-    `El enlace vale ${datos.venceHoras} horas (hasta las ${datos.venceHora}). Si no lo confirmás, el horario se libera.`,
+    `El enlace vale hasta las ${datos.venceHora} (hora de Argentina). Si no lo confirmás, el horario se libera.`,
     'Una vez confirmado, la solicitud queda pendiente de la aprobación del consultorio.', '',
     'Si no pediste este turno, ignorá este correo.', '', 'NutriBalance · Mauricio Pelozo',
   ].join('\n');

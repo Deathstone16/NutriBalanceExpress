@@ -7,5 +7,6 @@ function crearLimite(maximo: number, ventanaMs: number) {
 }
 export const crearLimiteLogin = () => crearLimite(5, 15 * 60_000);
 export const crearLimiteSolicitudes = () => crearLimite(10, 15 * 60_000);
+export const crearLimiteReenvios = () => crearLimite(8, 15 * 60_000);
 export const crearLimiteConfirmaciones = () => crearLimite(20, 15 * 60_000);
 export const crearLimiteDisponibilidad = () => crearLimite(60, 60_000);

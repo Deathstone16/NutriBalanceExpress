@@ -10,10 +10,12 @@ import { crearTransporte, remitente } from '../../shared/correo/transporte.js';
 import { correoConfirmacionTurno } from '../../shared/correo/plantillas.js';
 import { bloquearTurno, repositorioTurnos } from './turnos.repositorio.js';
 import { presentarRecibo, presentarTurno } from './turnos.presentador.js';
-import type { CambioTurno, FiltroAgenda, SolicitudTurno } from './turnos.esquemas.js';
+import type { CambioTurno, FiltroAgenda, ReenvioConfirmacion, SolicitudTurno, TurnoInterno } from './turnos.esquemas.js';
 
 /** Tiempo para confirmar el correo; pasado ese plazo la solicitud se cancela y el horario se libera. */
 export const VIGENCIA_CONFIRMACION_HORAS = 2;
+/** Espera mínima entre dos envíos del correo de una misma solicitud. */
+export const ESPERA_REENVIO_SEGUNDOS = 60;
 const transporteCorreo = crearTransporte();
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
 
@@ -56,14 +58,7 @@ export async function solicitarTurno(datos: SolicitudTurno) {
     throw error;
   }
   try {
-    await transporteCorreo.enviar(correoConfirmacionTurno(datos.contactEmail, remitente(), {
-      nombre: datos.contactName,
-      fecha: inicio.setLocale('es-AR').toFormat("cccc d 'de' LLLL 'de' yyyy"),
-      hora: inicio.toFormat('HH:mm'),
-      enlace: `${entorno.APP_ORIGIN}/confirmar-turno?token=${token}`,
-      venceHora: venceEn.toFormat('HH:mm'),
-      venceHoras: VIGENCIA_CONFIRMACION_HORAS,
-    }));
+    await enviarConfirmacion(datos.contactName, datos.contactEmail, inicio, token, venceEn);
   } catch (error) {
     // Sin correo la persona no puede confirmar: se libera el horario y se informa el fallo.
     await repositorioTurnos.cancelar(turno.id);
@@ -71,6 +66,67 @@ export async function solicitarTurno(datos: SolicitudTurno) {
     throw new ErrorAplicacion(502, 'EMAIL_DELIVERY_FAILED', 'No pudimos enviar el correo de confirmación. Revisá la dirección e intentá de nuevo.', [{ field: 'contactEmail', message: 'No pudimos enviar el correo a esta dirección.' }]);
   }
   return presentarRecibo(turno);
+}
+
+/** La profesional agenda a un paciente existente: el turno nace confirmado (sin correo de por medio). */
+export async function crearTurnoInterno(datos: TurnoInterno) {
+  const inicio = DateTime.fromISO(datos.startsAt).setZone(ZONA_CONSULTORIO);
+  const horarioValido = generarHorarios(inicio.toISODate()!).some(horario => Date.parse(horario.startsAt) === inicio.toMillis());
+  if (!horarioValido) throw new ErrorAplicacion(400, 'VALIDATION_ERROR', 'Elegí un horario futuro ofrecido por la agenda.', [{ field: 'startsAt', message: 'Horario inválido.' }]);
+  const paciente = await baseDatos.paciente.findUnique({ where: { id: datos.patientId } });
+  if (!paciente) throw recursoNoEncontrado('No se encontró el paciente.');
+  await repositorioTurnos.expirarSinConfirmar();
+  try {
+    return presentarTurno(await repositorioTurnos.crearConfirmado(paciente, inicio.toJSDate(), inicio.plus({ minutes: 30 }).toJSDate()));
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      throw new ErrorAplicacion(409, 'SLOT_UNAVAILABLE', 'El horario ya no está disponible.');
+    }
+    throw error;
+  }
+}
+
+function enviarConfirmacion(nombre: string, correo: string, inicio: DateTime, token: string, venceEn: DateTime) {
+  return transporteCorreo.enviar(correoConfirmacionTurno(correo, remitente(), {
+    nombre,
+    fecha: inicio.setLocale('es-AR').toFormat("cccc d 'de' LLLL 'de' yyyy"),
+    hora: inicio.toFormat('HH:mm'),
+    enlace: `${entorno.APP_ORIGIN}/confirmar-turno?token=${token}`,
+    venceHora: venceEn.setZone(ZONA_CONSULTORIO).toFormat('HH:mm'),
+  }));
+}
+
+/**
+ * Reenvía el correo de confirmación, con token nuevo (el anterior deja de servir), y permite
+ * corregir la dirección. El vencimiento original no se extiende, así que reenviar no sirve
+ * para retener un horario indefinidamente; entre envíos hay una espera.
+ */
+export async function reenviarConfirmacion(datos: ReenvioConfirmacion) {
+  await repositorioTurnos.expirarSinConfirmar();
+  const turno = await repositorioTurnos.buscar(datos.id);
+  if (!turno || !turno.correoContacto) throw recursoNoEncontrado('No encontramos la solicitud.');
+  if (turno.correoConfirmadoEn) throw new ErrorAplicacion(409, 'ALREADY_CONFIRMED', 'Tu correo ya está confirmado.');
+  if (turno.estado !== 'pending' || !turno.confirmacionVenceEn || turno.confirmacionVenceEn.getTime() <= Date.now()) {
+    throw new ErrorAplicacion(409, 'CONFIRMATION_EXPIRED', 'La solicitud venció y el horario se liberó. Pedí un nuevo turno.');
+  }
+  const espera = ESPERA_REENVIO_SEGUNDOS - Math.floor((Date.now() - turno.actualizadoEn.getTime()) / 1000);
+  if (espera > 0) {
+    throw new ErrorAplicacion(429, 'RESEND_TOO_SOON', `Esperá ${espera} segundos para volver a pedir el correo.`, [], espera);
+  }
+  const correo = datos.contactEmail ?? turno.correoContacto;
+  const token = randomBytes(32).toString('base64url');
+  const inicio = DateTime.fromJSDate(turno.inicio).setZone(ZONA_CONSULTORIO);
+  try {
+    await enviarConfirmacion(turno.nombreContacto, correo, inicio, token, DateTime.fromJSDate(turno.confirmacionVenceEn));
+  } catch (error) {
+    console.error(JSON.stringify({ evento: 'correo_no_reenviado', turnoId: turno.id, motivo: error instanceof Error ? error.message : 'desconocido' }));
+    throw new ErrorAplicacion(502, 'EMAIL_DELIVERY_FAILED', 'No pudimos enviar el correo. Revisá la dirección e intentá de nuevo.', [{ field: 'contactEmail', message: 'No pudimos enviar el correo a esta dirección.' }]);
+  }
+  const cambioCorreo = correo !== turno.correoContacto;
+  const pacienteId = cambioCorreo && !turno.pacienteId && turno.documentoContacto
+    ? await repositorioTurnos.reconocerPaciente(turno.documentoContacto, correo) : turno.pacienteId;
+  await repositorioTurnos.actualizarConfirmacion(turno.id, { correoContacto: correo, tokenConfirmacionHash: hashToken(token), pacienteId });
+  return { sentTo: correo, emailChanged: cambioCorreo, confirmationExpiresAt: turno.confirmacionVenceEn.toISOString() };
 }
 
 /** La persona abre el enlace del correo: su solicitud pasa a "correo confirmado". */

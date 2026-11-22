@@ -250,6 +250,28 @@ Horario ocupado: **409 SLOT_UNAVAILABLE**; refrescar disponibilidad. Si el corre
 
 Repetir el envío devuelve 200 con `alreadyConfirmed: true`. Token inexistente: **404 CONFIRMATION_LINK_INVALID**. Token vencido o solicitud cancelada: **409 CONFIRMATION_EXPIRED** (el horario ya se liberó). Formato inválido: **400 VALIDATION_ERROR**. Tiene límite de 20 intentos cada 15 minutos.
 
+### POST `/appointment-requests/resend-confirmation`
+
+**Público** (requiere CSRF). Reenvía el correo de una solicitud cuyo correo todavía no se confirmó; con `contactEmail` también corrige la dirección.
+
+```json
+{ "id": "33333333-3333-4333-8333-333333333333", "contactEmail": "correcto@example.test" }
+```
+
+`contactEmail` es opcional. **Respuesta 200:** `{ "sentTo": "correcto@example.test", "emailChanged": true, "confirmationExpiresAt": "2026-10-16T14:00:00Z" }`.
+
+El envío genera un token nuevo (el enlace anterior deja de servir) y **no extiende** el vencimiento original. Entre dos envíos de la misma solicitud hay una espera de 60 segundos: **429 RESEND_TOO_SOON** con `Retry-After`. Si se cambia el correo y la solicitud no tenía paciente vinculado, se vuelve a buscar por DNI y por el correo nuevo. Errores: **404** (solicitud inexistente), **409 ALREADY_CONFIRMED**, **409 CONFIRMATION_EXPIRED**, **502 EMAIL_DELIVERY_FAILED** (no se modifica nada), **400** (correo inválido). Límite: 8 intentos cada 15 minutos por origen.
+
+### POST `/appointments`
+
+**Privado** (sesión + CSRF). La profesional agenda a un paciente existente; el turno nace `confirmed`, vinculado a la ficha, sin correo de por medio.
+
+```json
+{ "patientId": "11111111-1111-4111-8111-111111111111", "startsAt": "2026-10-19T12:00:00Z" }
+```
+
+**Respuesta 201:** objeto de turno (ver abajo) con `status: "confirmed"`, `contactEmailConfirmed: true` y los datos de contacto copiados de la ficha. El horario debe ser uno ofrecido por la agenda. Errores: **404** (paciente inexistente), **409 SLOT_UNAVAILABLE**, **400** (horario inválido).
+
 ### Datos expuestos del turno en el panel privado
 
 ```json
@@ -433,6 +455,8 @@ Pacientes, agenda e historial comparten esta estructura. Los objetos de `data` t
 | 409 | CONFIRMATION_EXPIRED | El enlace del correo venció y el horario se liberó. |
 | 404 | CONFIRMATION_LINK_INVALID | El enlace de confirmación no existe. |
 | 502 | EMAIL_DELIVERY_FAILED | No se pudo enviar el correo de confirmación. |
+| 429 | RESEND_TOO_SOON | Hay que esperar antes de reenviar el correo (ver `Retry-After`). |
+| 409 | ALREADY_CONFIRMED | El correo de la solicitud ya está confirmado. |
 | 409 | APPOINTMENT_PATIENT_MISMATCH | El vínculo de paciente no corresponde a la operación. |
 | 409 | APPOINTMENT_ALREADY_LINKED | El turno ya tiene una consulta registrada. |
 | 429 | RATE_LIMITED | Demasiadas solicitudes; header Retry-After indica segundos de espera. |

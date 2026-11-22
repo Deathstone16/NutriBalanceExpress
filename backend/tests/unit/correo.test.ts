@@ -75,7 +75,7 @@ describe('correo saliente', () => {
 });
 
 describe('plantilla de confirmación de turno', () => {
-  const datos = { nombre: 'Ana <script>alert(1)</script>', fecha: 'lunes 23 de noviembre de 2026', hora: '10:00', enlace: 'https://nutri.test/confirmar-turno?token=abc"onmouseover="x', venceHora: '12:00', venceHoras: 2 };
+  const datos = { nombre: 'Ana <script>alert(1)</script>', fecha: 'lunes 23 de noviembre de 2026', hora: '10:00', enlace: 'https://nutri.test/confirmar-turno?token=abc"onmouseover="x', venceHora: '12:00' };
 
   it('escapa los datos de la persona y usa la paleta de la landing', () => {
     const resultado = correoConfirmacionTurno('ana@example.test', 'NutriBalance <no-reply@nutribalance.test>', datos);

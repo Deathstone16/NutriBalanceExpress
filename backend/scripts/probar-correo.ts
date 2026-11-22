@@ -23,7 +23,6 @@ try {
     hora: '10:00',
     enlace: `${entorno.APP_ORIGIN}/confirmar-turno?token=${'x'.repeat(43)}`,
     venceHora: '12:00',
-    venceHoras: 2,
   }));
   console.log(`Correo de prueba enviado a ${destino} por ${servidor.hostname}:${servidor.port || '(puerto por defecto)'}. Revisá la bandeja y la carpeta de spam.`);
 } catch (error) {
