@@ -36,7 +36,7 @@ export function crearAplicacion(configuracion: ConfiguracionHttp = crearConfigur
   aplicacion.post('/api/v1/auth/login', crearLimiteLogin());
   aplicacion.use('/api/v1', (peticion, _respuesta, siguiente) => {
     const mutacion = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(peticion.method);
-    if (mutacion && !['/auth/login', '/appointment-requests'].includes(peticion.path)) {
+    if (mutacion && !['/auth/login', '/appointment-requests', '/appointment-requests/confirm-email', '/appointment-requests/resend-confirmation'].includes(peticion.path)) {
       exigirAutenticacion(peticion, _respuesta, error => error ? siguiente(error) : verificarCsrf(peticion, _respuesta, siguiente));
     } else if (mutacion) verificarCsrf(peticion, _respuesta, siguiente);
     else siguiente();

@@ -7,6 +7,7 @@ import { baseDatos, cerrarConexiones } from '../../src/database/cliente.js';
 import { crearConfiguracionHttp } from '../../src/config/http.js';
 import { esquemaEntorno } from '../../src/config/entorno.js';
 import { crearEntornoTunel, ORIGEN_FRONTEND } from '../../scripts/perfil-tunel.js';
+import { correosDePrueba } from '../../src/shared/correo/transporte.js';
 
 const correoPrueba = 'integracion@nutri.test';
 const clavePrueba = 'clave-integracion-segura';
@@ -44,11 +45,21 @@ async function fechaProximoDiaHabil() {
   return { date: dia.toISODate()!, startsAt: horario.startsAt as string };
 }
 
-function crearTurnoPublico(agente: AgentePrueba, csrfToken: string, startsAt: string) {
+function crearTurnoPublico(agente: AgentePrueba, csrfToken: string, startsAt: string, datos: Record<string, unknown> = {}) {
   return agente.post('/api/v1/appointment-requests').set('X-CSRF-Token', csrfToken).send({
-    contactName: 'Ana Ejemplo', contactPhone: '+5493624000000', contactEmail: 'ana@example.test', startsAt,
+    contactName: 'Ana Ejemplo', contactPhone: '+5493624000000', contactEmail: 'ana@example.test',
+    contactDocumentNumber: '30111222', startsAt, ...datos,
   });
 }
+
+/** Equivale a que la persona abra el enlace del correo (el flujo real se prueba aparte). */
+const confirmarCorreoDirecto = (turnoId: string) =>
+  baseDatos.turno.update({ where: { id: turnoId }, data: { correoConfirmadoEn: new Date() } });
+const enlaceDelUltimoCorreo = () => {
+  const correo = correosDePrueba.at(-1)!;
+  const enlace = /https?:\/\/[^\s"<]+\/confirmar-turno\?token=([A-Za-z0-9_-]{43})/.exec(correo.texto)!;
+  return { correo, enlace: enlace[0], token: enlace[1]! };
+};
 
 async function crearTurnoPasado(pacienteId: string, estado: 'confirmed' | 'cancelled' = 'confirmed') {
   const inicio = DateTime.now().setZone('America/Argentina/Buenos_Aires').minus({ minutes: 1 });
@@ -333,6 +344,264 @@ describe('contrato HTTP de NutriTurnos', () => {
     expect(nuevaSolicitud.body.id).not.toBe(solicitud.body.id);
   });
 
+  it('exige DNI válido en la solicitud pública', async () => {
+    const { startsAt } = await fechaProximoDiaHabil();
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    for (const contactDocumentNumber of [undefined, '', '12.345.678', '123456']) {
+      const respuesta = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt, { contactDocumentNumber }).expect(400);
+      expect(respuesta.body.error.code).toBe('VALIDATION_ERROR');
+      expect(respuesta.body.error.details).toContainEqual(expect.objectContaining({ field: 'contactDocumentNumber' }));
+    }
+    expect(await baseDatos.turno.count()).toBe(0);
+  });
+
+  it('reconoce al paciente por DNI sin revelarlo en el recibo público', async () => {
+    const profesional = request.agent(crearAplicacion());
+    const { csrfToken } = await credencialesPrivadas(profesional);
+    const paciente = await crearPaciente(profesional, csrfToken, { documentNumber: '30111222', email: 'otra@example.test' }).expect(201);
+    const { startsAt } = await fechaProximoDiaHabil();
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    const recibo = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt).expect(201);
+    expect(Object.keys(recibo.body).sort()).toEqual(['confirmationExpiresAt', 'emailConfirmationRequired', 'endsAt', 'id', 'startsAt', 'status']);
+    const turno = await profesional.get(`/api/v1/appointments/${recibo.body.id}`).expect(200);
+    expect(turno.body).toMatchObject({ patientId: paciente.body.id, contactDocumentNumber: '30111222', status: 'pending' });
+  });
+
+  it('reconoce por correo solo si hay una única ficha sin DNI con ese correo', async () => {
+    const profesional = request.agent(crearAplicacion());
+    const { csrfToken } = await credencialesPrivadas(profesional);
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    const dia = await fechaProximoDiaHabil();
+    const horarios = (await visitante.get('/api/v1/availability').query({ date: dia.date }).expect(200)).body.slots as { startsAt: string }[];
+    const vinculo = async (indice: number) => {
+      const recibo = await crearTurnoPublico(visitante, csrf.body.csrfToken, horarios[indice]!.startsAt, { contactEmail: 'ANA@example.test' }).expect(201);
+      return (await profesional.get(`/api/v1/appointments/${recibo.body.id}`).expect(200)).body.patientId;
+    };
+
+    const conOtroDni = await crearPaciente(profesional, csrfToken, { documentNumber: '29000000', email: 'ana@example.test' }).expect(201);
+    expect(await vinculo(0)).toBeNull();
+
+    const sinDni = await crearPaciente(profesional, csrfToken, { email: 'ana@example.test' }).expect(201);
+    expect(await vinculo(1)).toBe(sinDni.body.id);
+
+    await crearPaciente(profesional, csrfToken, { firstName: 'Otra', email: 'ana@example.test' }).expect(201);
+    expect(await vinculo(2)).toBeNull();
+    expect(conOtroDni.body.id).not.toBe(sinDni.body.id);
+  });
+
+  it('confirma un turno reconocido con su paciente o con otra ficha elegida por la profesional', async () => {
+    const profesional = request.agent(crearAplicacion());
+    const { csrfToken } = await credencialesPrivadas(profesional);
+    const reconocido = await crearPaciente(profesional, csrfToken, { documentNumber: '30111222' }).expect(201);
+    const otro = await crearPaciente(profesional, csrfToken, { firstName: 'Bea' }).expect(201);
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    const dia = await fechaProximoDiaHabil();
+    const horarios = (await visitante.get('/api/v1/availability').query({ date: dia.date }).expect(200)).body.slots as { startsAt: string }[];
+    const primero = await crearTurnoPublico(visitante, csrf.body.csrfToken, horarios[0]!.startsAt).expect(201);
+    const segundo = await crearTurnoPublico(visitante, csrf.body.csrfToken, horarios[1]!.startsAt).expect(201);
+    await confirmarCorreoDirecto(primero.body.id);
+    await confirmarCorreoDirecto(segundo.body.id);
+    await profesional.patch(`/api/v1/appointments/${primero.body.id}`).set('X-CSRF-Token', csrfToken)
+      .send({ status: 'confirmed', patientId: reconocido.body.id }).expect(200);
+    const corregido = await profesional.patch(`/api/v1/appointments/${segundo.body.id}`).set('X-CSRF-Token', csrfToken)
+      .send({ status: 'confirmed', patientId: otro.body.id }).expect(200);
+    expect(corregido.body.patientId).toBe(otro.body.id);
+  });
+
+  it('exige un correo válido en la solicitud pública', async () => {
+    const { startsAt } = await fechaProximoDiaHabil();
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    for (const contactEmail of [undefined, null, '', 'no-es-un-correo']) {
+      const respuesta = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt, { contactEmail }).expect(400);
+      expect(respuesta.body.error.details).toContainEqual(expect.objectContaining({ field: 'contactEmail' }));
+    }
+    expect(await baseDatos.turno.count()).toBe(0);
+  });
+
+  it('envía el correo de confirmación con el enlace y deja el turno pendiente hasta confirmarlo', async () => {
+    const { startsAt } = await fechaProximoDiaHabil();
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    correosDePrueba.length = 0;
+    const recibo = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt, { contactName: 'Ana <b>Ejemplo</b>', contactEmail: 'ANA@example.test' }).expect(201);
+    expect(recibo.body).toMatchObject({ status: 'pending', emailConfirmationRequired: true, confirmationExpiresAt: expect.any(String) });
+    expect(correosDePrueba).toHaveLength(1);
+    const { correo, token } = enlaceDelUltimoCorreo();
+    expect(correo).toMatchObject({ para: 'ana@example.test', asunto: 'Confirmá tu turno en NutriBalance' });
+    expect(correo.html).toContain('Confirmar mi turno');
+    expect(correo.html).toContain('Ana &lt;b&gt;Ejemplo&lt;/b&gt;');
+    expect(correo.html).not.toContain('<b>Ejemplo</b>');
+    const guardado = await baseDatos.turno.findUniqueOrThrow({ where: { id: recibo.body.id } });
+    expect(guardado.tokenConfirmacionHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(guardado.tokenConfirmacionHash).not.toContain(token);
+    expect(guardado.correoConfirmadoEn).toBeNull();
+  });
+
+  it('confirma el correo con el enlace, es idempotente y habilita la confirmación de la profesional', async () => {
+    const profesional = request.agent(crearAplicacion());
+    const { csrfToken } = await credencialesPrivadas(profesional);
+    const paciente = await crearPaciente(profesional, csrfToken).expect(201);
+    const { startsAt } = await fechaProximoDiaHabil();
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    const recibo = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt).expect(201);
+    const { token } = enlaceDelUltimoCorreo();
+
+    const antes = await profesional.get(`/api/v1/appointments/${recibo.body.id}`).expect(200);
+    expect(antes.body.contactEmailConfirmed).toBe(false);
+    const bloqueado = await profesional.patch(`/api/v1/appointments/${recibo.body.id}`).set('X-CSRF-Token', csrfToken)
+      .send({ status: 'confirmed', patientId: paciente.body.id }).expect(409);
+    expect(bloqueado.body.error.code).toBe('EMAIL_NOT_CONFIRMED');
+
+    await visitante.post('/api/v1/appointment-requests/confirm-email').send({ token }).expect(403);
+    const confirmado = await visitante.post('/api/v1/appointment-requests/confirm-email').set('X-CSRF-Token', csrf.body.csrfToken).send({ token }).expect(200);
+    expect(confirmado.body).toMatchObject({ emailConfirmed: true, alreadyConfirmed: false, startsAt, status: 'pending' });
+    expect(Object.keys(confirmado.body).sort()).toEqual(['alreadyConfirmed', 'emailConfirmed', 'endsAt', 'startsAt', 'status']);
+    const repetido = await visitante.post('/api/v1/appointment-requests/confirm-email').set('X-CSRF-Token', csrf.body.csrfToken).send({ token }).expect(200);
+    expect(repetido.body.alreadyConfirmed).toBe(true);
+
+    expect((await profesional.get(`/api/v1/appointments/${recibo.body.id}`).expect(200)).body.contactEmailConfirmed).toBe(true);
+    await profesional.patch(`/api/v1/appointments/${recibo.body.id}`).set('X-CSRF-Token', csrfToken)
+      .send({ status: 'confirmed', patientId: paciente.body.id }).expect(200);
+  });
+
+  it('rechaza enlaces inventados o con formato inválido', async () => {
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    const inventado = await visitante.post('/api/v1/appointment-requests/confirm-email').set('X-CSRF-Token', csrf.body.csrfToken).send({ token: 'a'.repeat(43) }).expect(404);
+    expect(inventado.body.error.code).toBe('CONFIRMATION_LINK_INVALID');
+    await visitante.post('/api/v1/appointment-requests/confirm-email').set('X-CSRF-Token', csrf.body.csrfToken).send({ token: 'corto' }).expect(400);
+  });
+
+  it('libera el horario si el correo no se confirma a tiempo y el enlace vencido no sirve', async () => {
+    const { startsAt } = await fechaProximoDiaHabil();
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    const recibo = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt).expect(201);
+    const { token } = enlaceDelUltimoCorreo();
+    await baseDatos.turno.update({ where: { id: recibo.body.id }, data: { confirmacionVenceEn: new Date(Date.now() - 60_000) } });
+
+    const vencido = await visitante.post('/api/v1/appointment-requests/confirm-email').set('X-CSRF-Token', csrf.body.csrfToken).send({ token }).expect(409);
+    expect(vencido.body.error.code).toBe('CONFIRMATION_EXPIRED');
+    expect((await baseDatos.turno.findUniqueOrThrow({ where: { id: recibo.body.id } })).estado).toBe('cancelled');
+
+    // Otra persona ya puede reservar ese mismo horario.
+    const otra = request.agent(crearAplicacion());
+    const csrfOtra = await otra.get('/api/v1/auth/csrf').expect(200);
+    await crearTurnoPublico(otra, csrfOtra.body.csrfToken, startsAt, { contactEmail: 'otra@example.test' }).expect(201);
+  });
+
+  it('expira solicitudes sin confirmar al consultar disponibilidad', async () => {
+    const { startsAt, date } = await fechaProximoDiaHabil();
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    const recibo = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt).expect(201);
+    const ocupado = await visitante.get('/api/v1/availability').query({ date }).expect(200);
+    expect(ocupado.body.slots.map((horario: { startsAt: string }) => horario.startsAt)).not.toContain(startsAt);
+    await baseDatos.turno.update({ where: { id: recibo.body.id }, data: { confirmacionVenceEn: new Date(Date.now() - 60_000) } });
+    const libre = await visitante.get('/api/v1/availability').query({ date }).expect(200);
+    expect(libre.body.slots.map((horario: { startsAt: string }) => horario.startsAt)).toContain(startsAt);
+  });
+
+  const envejecerTurno = (turnoId: string) =>
+    baseDatos.$executeRaw`UPDATE appointments SET updated_at = now() - interval '2 minutes' WHERE id = ${turnoId}::uuid`;
+  const reenviar = (agente: AgentePrueba, csrf: string, cuerpo: Record<string, unknown>) =>
+    agente.post('/api/v1/appointment-requests/resend-confirmation').set('X-CSRF-Token', csrf).send(cuerpo);
+
+  it('reenvía el correo con un token nuevo, respeta la espera y el anterior deja de servir', async () => {
+    const { startsAt } = await fechaProximoDiaHabil();
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    correosDePrueba.length = 0;
+    const recibo = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt).expect(201);
+    const primero = enlaceDelUltimoCorreo();
+
+    const pronto = await reenviar(visitante, csrf.body.csrfToken, { id: recibo.body.id }).expect(429);
+    expect(pronto.body.error.code).toBe('RESEND_TOO_SOON');
+    expect(Number(pronto.headers['retry-after'])).toBeGreaterThan(0);
+    expect(correosDePrueba).toHaveLength(1);
+
+    await envejecerTurno(recibo.body.id);
+    const reenvio = await reenviar(visitante, csrf.body.csrfToken, { id: recibo.body.id }).expect(200);
+    expect(reenvio.body).toMatchObject({ sentTo: 'ana@example.test', emailChanged: false, confirmationExpiresAt: recibo.body.confirmationExpiresAt });
+    expect(correosDePrueba).toHaveLength(2);
+    const segundo = enlaceDelUltimoCorreo();
+    expect(segundo.token).not.toBe(primero.token);
+
+    const viejo = await visitante.post('/api/v1/appointment-requests/confirm-email').set('X-CSRF-Token', csrf.body.csrfToken).send({ token: primero.token }).expect(404);
+    expect(viejo.body.error.code).toBe('CONFIRMATION_LINK_INVALID');
+    await visitante.post('/api/v1/appointment-requests/confirm-email').set('X-CSRF-Token', csrf.body.csrfToken).send({ token: segundo.token }).expect(200);
+  });
+
+  it('permite corregir el correo al reenviar y vuelve a reconocer al paciente por ese correo', async () => {
+    const profesional = request.agent(crearAplicacion());
+    const { csrfToken } = await credencialesPrivadas(profesional);
+    const paciente = await crearPaciente(profesional, csrfToken, { email: 'correcto@example.test' }).expect(201);
+    const { startsAt } = await fechaProximoDiaHabil();
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    const recibo = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt, { contactEmail: 'equivocado@example.test' }).expect(201);
+    await envejecerTurno(recibo.body.id);
+    correosDePrueba.length = 0;
+
+    await reenviar(visitante, csrf.body.csrfToken, { id: recibo.body.id, contactEmail: 'no-es-correo' }).expect(400);
+    expect(correosDePrueba).toHaveLength(0);
+    const cambio = await reenviar(visitante, csrf.body.csrfToken, { id: recibo.body.id, contactEmail: 'CORRECTO@example.test' }).expect(200);
+    expect(cambio.body).toMatchObject({ sentTo: 'correcto@example.test', emailChanged: true });
+    expect(correosDePrueba.map(correo => correo.para)).toEqual(['correcto@example.test']);
+    const turno = await profesional.get(`/api/v1/appointments/${recibo.body.id}`).expect(200);
+    expect(turno.body).toMatchObject({ contactEmail: 'correcto@example.test', contactEmailConfirmed: false, patientId: paciente.body.id });
+  });
+
+  it('rechaza reenviar solicitudes ya confirmadas, vencidas o inexistentes', async () => {
+    const { startsAt } = await fechaProximoDiaHabil();
+    const visitante = request.agent(crearAplicacion());
+    const csrf = await visitante.get('/api/v1/auth/csrf').expect(200);
+    const recibo = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt).expect(201);
+    await envejecerTurno(recibo.body.id);
+    await baseDatos.turno.update({ where: { id: recibo.body.id }, data: { confirmacionVenceEn: new Date(Date.now() - 60_000) } });
+    const vencida = await reenviar(visitante, csrf.body.csrfToken, { id: recibo.body.id }).expect(409);
+    expect(vencida.body.error.code).toBe('CONFIRMATION_EXPIRED');
+
+    const otra = await crearTurnoPublico(visitante, csrf.body.csrfToken, startsAt, { contactEmail: 'otra@example.test' }).expect(201);
+    await confirmarCorreoDirecto(otra.body.id);
+    await envejecerTurno(otra.body.id);
+    const confirmada = await reenviar(visitante, csrf.body.csrfToken, { id: otra.body.id }).expect(409);
+    expect(confirmada.body.error.code).toBe('ALREADY_CONFIRMED');
+    await reenviar(visitante, csrf.body.csrfToken, { id: '11111111-1111-4111-8111-111111111111' }).expect(404);
+  });
+
+  it('la profesional crea un turno confirmado para un paciente, sin correo de por medio', async () => {
+    const anonimo = request.agent(crearAplicacion());
+    const csrfAnonimo = await anonimo.get('/api/v1/auth/csrf').expect(200);
+    const { startsAt, date } = await fechaProximoDiaHabil();
+    await anonimo.post('/api/v1/appointments').set('X-CSRF-Token', csrfAnonimo.body.csrfToken).send({ patientId: '11111111-1111-4111-8111-111111111111', startsAt }).expect(401);
+
+    const profesional = request.agent(crearAplicacion());
+    const { csrfToken } = await credencialesPrivadas(profesional);
+    const paciente = await crearPaciente(profesional, csrfToken, { documentNumber: '30111222', email: 'ana@example.test' }).expect(201);
+    correosDePrueba.length = 0;
+    const creado = await profesional.post('/api/v1/appointments').set('X-CSRF-Token', csrfToken).send({ patientId: paciente.body.id, startsAt }).expect(201);
+    expect(creado.body).toMatchObject({
+      patientId: paciente.body.id, status: 'confirmed', startsAt, contactDocumentNumber: '30111222',
+      contactEmail: 'ana@example.test', contactEmailConfirmed: true, contactName: 'Ana Prueba',
+    });
+    expect(correosDePrueba).toHaveLength(0);
+
+    const libres = await profesional.get('/api/v1/availability').query({ date }).expect(200);
+    expect(libres.body.slots.map((horario: { startsAt: string }) => horario.startsAt)).not.toContain(startsAt);
+    const repetido = await profesional.post('/api/v1/appointments').set('X-CSRF-Token', csrfToken).send({ patientId: paciente.body.id, startsAt }).expect(409);
+    expect(repetido.body.error.code).toBe('SLOT_UNAVAILABLE');
+    await profesional.post('/api/v1/appointments').set('X-CSRF-Token', csrfToken).send({ patientId: '11111111-1111-4111-8111-111111111111', startsAt: libres.body.slots[0].startsAt }).expect(404);
+    await profesional.post('/api/v1/appointments').set('X-CSRF-Token', csrfToken).send({ patientId: paciente.body.id, startsAt: '2020-01-01T12:00:00Z' }).expect(400);
+    await profesional.post('/api/v1/appointments').send({ patientId: paciente.body.id, startsAt: libres.body.slots[0].startsAt }).expect(403);
+  });
+
   it('requiere paciente para confirmar y valida transiciones permitidas del turno', async () => {
     const agente = request.agent(crearAplicacion());
     const { csrfToken } = await credencialesPrivadas(agente);
@@ -341,7 +610,8 @@ describe('contrato HTTP de NutriTurnos', () => {
     const anonimo = request.agent(crearAplicacion());
     const csrfAnonimo = await anonimo.get('/api/v1/auth/csrf').expect(200);
     const solicitud = await crearTurnoPublico(anonimo, csrfAnonimo.body.csrfToken, startsAt).expect(201);
-    const faltaPaciente = await agente.patch(`/api/v1/appointments/${solicitud.body.id}`).set('X-CSRF-Token', csrfToken)
+    await confirmarCorreoDirecto(solicitud.body.id);
+    const faltaPaciente =await agente.patch(`/api/v1/appointments/${solicitud.body.id}`).set('X-CSRF-Token', csrfToken)
       .send({ status: 'confirmed' }).expect(409);
     expect(faltaPaciente.body.error.code).toBe('PATIENT_REQUIRED');
     const confirmado = await agente.patch(`/api/v1/appointments/${solicitud.body.id}`).set('X-CSRF-Token', csrfToken)

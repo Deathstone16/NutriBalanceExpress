@@ -6,6 +6,8 @@ export class ErrorAplicacion extends Error {
     public readonly codigo: string,
     mensaje: string,
     public readonly detalles: DetalleError[] = [],
+    /** Segundos de espera sugeridos; se informan en el encabezado Retry-After. */
+    public readonly reintentarEnSegundos?: number,
   ) { super(mensaje); this.name = 'ErrorAplicacion'; }
 }
 
