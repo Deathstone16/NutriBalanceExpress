@@ -91,7 +91,7 @@ function enviarConfirmacion(nombre: string, correo: string, inicio: DateTime, to
     nombre,
     fecha: inicio.setLocale('es-AR').toFormat("cccc d 'de' LLLL 'de' yyyy"),
     hora: inicio.toFormat('HH:mm'),
-    enlace: `${entorno.APP_ORIGIN}/confirmar-turno?token=${token}`,
+    enlace: `${entorno.PUBLIC_WEB_ORIGIN ?? entorno.APP_ORIGIN}/confirmar-turno?token=${token}`,
     venceHora: venceEn.setZone(ZONA_CONSULTORIO).toFormat('HH:mm'),
   }));
 }
