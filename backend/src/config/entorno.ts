@@ -6,6 +6,9 @@ export const esquemaEntorno = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.enum(['127.0.0.1', '0.0.0.0']).default('127.0.0.1'),
   APP_ORIGIN: z.url().default('http://localhost:5173'),
+  // Sitio que abre la persona desde el correo. Si falta, se usa APP_ORIGIN. Hace falta cuando
+  // APP_ORIGIN es el origen interno del gateway (protegido) y no la web pública.
+  PUBLIC_WEB_ORIGIN: z.preprocess(valor => valor === '' ? undefined : valor, z.url().optional()),
   TRUST_PROXY: z.enum(['none', 'loopback', 'one']).optional(),
   SESSION_COOKIE_SECURE: z.enum(['true', 'false']).transform(valor => valor === 'true').optional(),
   SESSION_COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).default('lax'),
@@ -25,9 +28,13 @@ export const esquemaEntorno = z.object({
   if (datos.NODE_ENV === 'production' && !cookieSegura) {
     contexto.addIssue({ code: 'custom', path: ['SESSION_COOKIE_SECURE'], message: 'En producción la cookie debe ser Secure.' });
   }
-  const origen = new URL(datos.APP_ORIGIN);
-  if (!['http:', 'https:'].includes(origen.protocol) || origen.origin !== datos.APP_ORIGIN) {
-    contexto.addIssue({ code: 'custom', path: ['APP_ORIGIN'], message: 'Usá el origen exacto del frontend, sin rutas ni barra final.' });
+  for (const campo of ['APP_ORIGIN', 'PUBLIC_WEB_ORIGIN'] as const) {
+    const valor = datos[campo];
+    if (valor === undefined) continue;
+    const origen = new URL(valor);
+    if (!['http:', 'https:'].includes(origen.protocol) || origen.origin !== valor) {
+      contexto.addIssue({ code: 'custom', path: [campo], message: 'Usá el origen exacto del frontend, sin rutas ni barra final.' });
+    }
   }
 });
 
